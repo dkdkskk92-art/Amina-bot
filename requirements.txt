@@ -1,8 +1,4 @@
-fastapi
-uvicorn[standard]
-aiogram>=3.0
-sqlalchemy[asyncio]>=2.0
-asyncpg
-pydantic-settings
-telegram-init-data
-python-dotenv
+Flask==3.0.3
+Flask-SQLAlchemy==3.1.1
+Werkzeug==3.0.3
+gunicorn==22.0.0
