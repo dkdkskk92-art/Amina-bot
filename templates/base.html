@@ -310,5 +310,207 @@
         </a>
     </nav>
     {% endif %}
-</body>
+    <script>
+    (() => {
+        const contentSelector = '.card-content';
+        let pageController = null;
+        let pageIntervals = [];
+        let isNavigating = false;
+
+        function cleanupPage() {
+            if (pageController) pageController.abort();
+            pageController = null;
+            pageIntervals.forEach(id => clearInterval(id));
+            pageIntervals = [];
+        }
+
+        function runPageScripts(root) {
+            cleanupPage();
+            pageController = new AbortController();
+
+            const originalSetInterval = window.setInterval;
+            const originalAddEventListener = document.addEventListener;
+
+            window.setInterval = function (...args) {
+                const id = originalSetInterval.apply(window, args);
+                pageIntervals.push(id);
+                return id;
+            };
+
+            document.addEventListener = function (type, listener, options) {
+                const opts = typeof options === 'boolean'
+                    ? { capture: options, signal: pageController.signal }
+                    : { ...(options || {}), signal: pageController.signal };
+                return originalAddEventListener.call(document, type, listener, opts);
+            };
+
+            try {
+                root.querySelectorAll('script').forEach(script => {
+                    if (script.src) return;
+                    const source = script.textContent || '';
+                    const names = [...source.matchAll(/function\\s+([A-Za-z_$][\\w$]*)\\s*\\(/g)]
+                        .map(match => match[1]);
+                    const exports = [...new Set(names)]
+                        .map(name => 'if (typeof ' + name + ' === "function") window.' + name + ' = ' + name + ';')
+                        .join('\\n');
+
+                    try {
+                        new Function(source + '\\n' + exports)();
+                    } catch (error) {
+                        console.error('Ошибка скрипта страницы:', error);
+                    }
+                });
+            } finally {
+                window.setInterval = originalSetInterval;
+                document.addEventListener = originalAddEventListener;
+            }
+
+            document.dispatchEvent(new Event('app:page-ready'));
+        }
+
+        async function navigate(url, options = {}) {
+            if (isNavigating) return;
+            const target = new URL(url, window.location.href);
+            if (target.origin !== window.location.origin) {
+                window.location.href = target.href;
+                return;
+            }
+
+            const currentContent = document.querySelector(contentSelector);
+            if (!currentContent) {
+                window.location.href = target.href;
+                return;
+            }
+
+            isNavigating = true;
+            currentContent.classList.add('is-navigating');
+
+            try {
+                const response = await fetch(target.href, {
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                    credentials: 'same-origin'
+                });
+
+                if (!response.ok || !response.headers.get('content-type')?.includes('text/html')) {
+                    throw new Error('Не удалось загрузить страницу');
+                }
+
+                const html = await response.text();
+                const nextDocument = new DOMParser().parseFromString(html, 'text/html');
+                const nextContent = nextDocument.querySelector(contentSelector);
+
+                if (!nextContent) throw new Error('Не найден контейнер страницы');
+
+                cleanupPage();
+                currentContent.innerHTML = nextContent.innerHTML;
+                document.title = nextDocument.title || document.title;
+
+                const oldNav = document.querySelector('.bottom-nav');
+                const newNav = nextDocument.querySelector('.bottom-nav');
+                if (oldNav && newNav) oldNav.replaceWith(newNav);
+                else if (oldNav && !newNav) oldNav.remove();
+                else if (!oldNav && newNav) document.body.appendChild(newNav);
+
+                const finalUrl = new URL(response.url || target.href, window.location.href);
+                if (options.history !== false) {
+                    if (finalUrl.href === window.location.href) {
+                        history.replaceState({}, '', finalUrl.href);
+                    } else {
+                        history.pushState({}, '', finalUrl.href);
+                    }
+                }
+
+                currentContent.scrollTop = 0;
+                currentContent.classList.remove('is-navigating');
+                runPageScripts(currentContent);
+            } catch (error) {
+                console.error('AJAX-навигация не удалась:', error);
+                window.location.href = target.href;
+            } finally {
+                isNavigating = false;
+            }
+        }
+
+        document.addEventListener('click', event => {
+            const link = event.target.closest('a[href]');
+            if (!link || event.defaultPrevented || event.button !== 0 ||
+                event.metaKey || event.ctrlKey || event.shiftKey || event.altKey ||
+                link.target || link.hasAttribute('download') ||
+                link.getAttribute('href').startsWith('#') ||
+                link.getAttribute('href').startsWith('javascript:') ||
+                link.hasAttribute('data-no-ajax')) return;
+
+            const url = new URL(link.href, window.location.href);
+            if (url.origin !== window.location.origin) return;
+
+            event.preventDefault();
+            navigate(url.href);
+        });
+
+        document.addEventListener('submit', event => {
+            if (event.defaultPrevented) return;
+            const form = event.target;
+            if (!(form instanceof HTMLFormElement) ||
+                form.target || form.hasAttribute('data-no-ajax')) return;
+
+            const method = (form.method || 'GET').toUpperCase();
+            if (!['GET', 'POST'].includes(method)) return;
+
+            const action = new URL(form.action || window.location.href, window.location.href);
+            if (action.origin !== window.location.origin) return;
+
+            event.preventDefault();
+            const data = new FormData(form, event.submitter);
+            if (method === 'GET') {
+                for (const [key, value] of data.entries()) {
+                    if (typeof value === 'string') action.searchParams.append(key, value);
+                }
+                navigate(action.href);
+                return;
+            }
+
+            (async () => {
+                try {
+                    const response = await fetch(action.href, {
+                        method: 'POST',
+                        body: data,
+                        credentials: 'same-origin',
+                        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                    });
+                    if (!response.ok || !response.headers.get('content-type')?.includes('text/html')) {
+                        throw new Error('Не удалось отправить форму');
+                    }
+                    const html = await response.text();
+                    const finalUrl = response.url || action.href;
+                    const nextDocument = new DOMParser().parseFromString(html, 'text/html');
+                    const nextContent = nextDocument.querySelector(contentSelector);
+                    if (!nextContent) throw new Error('Ответ не содержит страницу');
+                    cleanupPage();
+                    document.querySelector(contentSelector).innerHTML = nextContent.innerHTML;
+                    document.title = nextDocument.title || document.title;
+
+                    const oldNav = document.querySelector('.bottom-nav');
+                    const newNav = nextDocument.querySelector('.bottom-nav');
+                    if (oldNav && newNav) oldNav.replaceWith(newNav);
+                    else if (oldNav && !newNav) oldNav.remove();
+                    else if (!oldNav && newNav) document.body.appendChild(newNav);
+
+                    if (new URL(finalUrl, window.location.href).href !== window.location.href) {
+                        history.pushState({}, '', finalUrl);
+                    }
+                    const content = document.querySelector(contentSelector);
+                    content.scrollTop = 0;
+                    runPageScripts(content);
+                } catch (error) {
+                    console.error('AJAX-отправка формы не удалась:', error);
+                    form.submit();
+                }
+            })();
+        });
+
+        window.addEventListener('popstate', () => navigate(window.location.href, { history: false }));
+        runPageScripts(document.querySelector(contentSelector) || document);
+    })();
+    </script>
+\n</body>
 </html>
