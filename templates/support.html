@@ -127,7 +127,7 @@
     }
 
     // Ограничение выбора чекбоксов до 2-х
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('app:page-ready', () => {
         const checkboxes = document.querySelectorAll('.sphere-checkbox');
         checkboxes.forEach(box => {
             box.addEventListener('change', () => {
