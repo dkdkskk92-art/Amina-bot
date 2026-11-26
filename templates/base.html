@@ -348,14 +348,14 @@
                 root.querySelectorAll('script').forEach(script => {
                     if (script.src) return;
                     const source = script.textContent || '';
-                    const names = [...source.matchAll(/function\\s+([A-Za-z_$][\\w$]*)\\s*\\(/g)]
+                    const names = [...source.matchAll(/function\s+([A-Za-z_$][\w$]*)\s*\(/g)]
                         .map(match => match[1]);
                     const exports = [...new Set(names)]
                         .map(name => 'if (typeof ' + name + ' === "function") window.' + name + ' = ' + name + ';')
-                        .join('\\n');
+                        .join('\n');
 
                     try {
-                        new Function(source + '\\n' + exports)();
+                        new Function(source + '\n' + exports)();
                     } catch (error) {
                         console.error('Ошибка скрипта страницы:', error);
                     }
